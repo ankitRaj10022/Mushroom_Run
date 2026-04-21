@@ -1,14 +1,19 @@
 #include "Platformer/World.hpp"
 
 #include <SFML/Graphics/CircleShape.hpp>
+#include <SFML/Graphics/Image.hpp>
 #include <SFML/Graphics/RectangleShape.hpp>
+#include <SFML/Graphics/Sprite.hpp>
 #include <SFML/Graphics/Text.hpp>
 #include <SFML/Graphics/VertexArray.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <map>
 #include <sstream>
+#include <string>
+#include <vector>
 
 namespace Game {
 
@@ -18,27 +23,74 @@ constexpr float kTileSize = 48.0f;
 constexpr float kScreenWidth = 1280.0f;
 constexpr float kScreenHeight = 720.0f;
 constexpr float kGravity = 1850.0f;
-constexpr float kJumpVelocity = -660.0f;
-constexpr float kMaxFallSpeed = 920.0f;
-constexpr float kWalkAcceleration = 1900.0f;
-constexpr float kGroundDrag = 2100.0f;
-constexpr float kAirDrag = 800.0f;
+constexpr float kJumpVelocity = -670.0f;
+constexpr float kMaxFallSpeed = 940.0f;
+constexpr float kWalkAcceleration = 1950.0f;
+constexpr float kGroundDrag = 2200.0f;
+constexpr float kAirDrag = 860.0f;
 constexpr float kWalkSpeed = 255.0f;
-constexpr float kRunSpeed = 340.0f;
+constexpr float kRunSpeed = 352.0f;
 constexpr float kEnemySpeed = 92.0f;
-constexpr float kMushroomSpeed = 92.0f;
+constexpr float kPlatformCarryTolerance = 10.0f;
+constexpr int kTileSpriteSize = 16;
+constexpr int kLevelCount = 3;
+
+enum class SpriteId {
+  Ground,
+  Brick,
+  Question,
+  UsedBlock,
+  Stone,
+  PipeCapLeft,
+  PipeCapRight,
+  PipeBodyLeft,
+  PipeBodyRight,
+  Platform,
+  CoinA,
+  CoinB,
+  Flag,
+  PlayerIdle,
+  PlayerRunA,
+  PlayerRunB,
+  PlayerJump,
+  PlayerPowerIdle,
+  PlayerPowerRunA,
+  PlayerPowerRunB,
+  PlayerPowerJump,
+  WalkerA,
+  WalkerB,
+  HopperA,
+  HopperB,
+  SpikyA,
+  SpikyB,
+  FlyerA,
+  FlyerB,
+  Mushroom
+};
+
+struct LevelDescriptor {
+  const char* code;
+  const char* name;
+  const char* subtitle;
+  sf::Color skyTop;
+  sf::Color skyBottom;
+  sf::Color hillFar;
+  sf::Color hillNear;
+  float timeLimit;
+};
+
+const std::array<LevelDescriptor, kLevelCount> kLevels{{
+    {"1-1", "Verdant Run", "A bright opener with ground threats and the first moving decks.",
+     sf::Color(121, 203, 255), sf::Color(193, 238, 255), sf::Color(110, 196, 123), sf::Color(79, 169, 96), 380.0f},
+    {"1-2", "Foundry Night", "Stone shafts, lift stacks, and tighter enemy pressure.",
+     sf::Color(44, 61, 98), sf::Color(102, 126, 176), sf::Color(73, 82, 115), sf::Color(53, 60, 83), 360.0f},
+    {"1-3", "Sky Bridge", "Cloud gaps, flyers, and chained moving platforms to the crown.",
+     sf::Color(248, 184, 116), sf::Color(255, 224, 181), sf::Color(166, 171, 222), sf::Color(127, 142, 214), 340.0f},
+}};
 
 sf::Color rgb(int r, int g, int b, int a = 255) {
   return sf::Color(static_cast<sf::Uint8>(r), static_cast<sf::Uint8>(g), static_cast<sf::Uint8>(b),
                    static_cast<sf::Uint8>(a));
-}
-
-sf::Color shade(sf::Color color, int delta) {
-  auto clamp = [](int value) { return static_cast<sf::Uint8>(std::clamp(value, 0, 255)); };
-  color.r = clamp(static_cast<int>(color.r) + delta);
-  color.g = clamp(static_cast<int>(color.g) + delta);
-  color.b = clamp(static_cast<int>(color.b) + delta);
-  return color;
 }
 
 float clampf(float value, float low, float high) {
@@ -49,13 +101,296 @@ bool intersects(const sf::FloatRect& lhs, const sf::FloatRect& rhs) {
   return lhs.intersects(rhs);
 }
 
+bool overlapsOnX(const sf::FloatRect& lhs, const sf::FloatRect& rhs) {
+  return lhs.left < rhs.left + rhs.width && lhs.left + lhs.width > rhs.left;
+}
+
+bool isOnScreen(float cameraX, const sf::Vector2f& position, const sf::Vector2f& size) {
+  return position.x + size.x >= cameraX - 96.0f && position.x <= cameraX + kScreenWidth + 96.0f;
+}
+
+sf::IntRect spriteRect(SpriteId id) {
+  switch (id) {
+    case SpriteId::Ground:
+      return {0, 0, 16, 16};
+    case SpriteId::Brick:
+      return {16, 0, 16, 16};
+    case SpriteId::Question:
+      return {32, 0, 16, 16};
+    case SpriteId::UsedBlock:
+      return {48, 0, 16, 16};
+    case SpriteId::Stone:
+      return {64, 0, 16, 16};
+    case SpriteId::PipeCapLeft:
+      return {80, 0, 16, 16};
+    case SpriteId::PipeCapRight:
+      return {96, 0, 16, 16};
+    case SpriteId::PipeBodyLeft:
+      return {112, 0, 16, 16};
+    case SpriteId::PipeBodyRight:
+      return {128, 0, 16, 16};
+    case SpriteId::Platform:
+      return {144, 0, 16, 16};
+    case SpriteId::CoinA:
+      return {160, 0, 16, 16};
+    case SpriteId::CoinB:
+      return {176, 0, 16, 16};
+    case SpriteId::Flag:
+      return {192, 0, 16, 16};
+    case SpriteId::PlayerIdle:
+      return {0, 16, 16, 16};
+    case SpriteId::PlayerRunA:
+      return {16, 16, 16, 16};
+    case SpriteId::PlayerRunB:
+      return {32, 16, 16, 16};
+    case SpriteId::PlayerJump:
+      return {48, 16, 16, 16};
+    case SpriteId::PlayerPowerIdle:
+      return {64, 16, 16, 16};
+    case SpriteId::PlayerPowerRunA:
+      return {80, 16, 16, 16};
+    case SpriteId::PlayerPowerRunB:
+      return {96, 16, 16, 16};
+    case SpriteId::PlayerPowerJump:
+      return {112, 16, 16, 16};
+    case SpriteId::WalkerA:
+      return {0, 32, 16, 16};
+    case SpriteId::WalkerB:
+      return {16, 32, 16, 16};
+    case SpriteId::HopperA:
+      return {32, 32, 16, 16};
+    case SpriteId::HopperB:
+      return {48, 32, 16, 16};
+    case SpriteId::SpikyA:
+      return {64, 32, 16, 16};
+    case SpriteId::SpikyB:
+      return {80, 32, 16, 16};
+    case SpriteId::FlyerA:
+      return {96, 32, 16, 16};
+    case SpriteId::FlyerB:
+      return {112, 32, 16, 16};
+    case SpriteId::Mushroom:
+      return {128, 32, 16, 16};
+  }
+  return {0, 0, 16, 16};
+}
+
+void setPixelSafe(sf::Image& image, int x, int y, const sf::Color& color) {
+  if (x < 0 || y < 0) {
+    return;
+  }
+
+  const sf::Vector2u size = image.getSize();
+  if (static_cast<unsigned int>(x) >= size.x || static_cast<unsigned int>(y) >= size.y) {
+    return;
+  }
+
+  image.setPixel(static_cast<unsigned int>(x), static_cast<unsigned int>(y), color);
+}
+
+void fillRect(sf::Image& image, int x, int y, int width, int height, const sf::Color& color) {
+  for (int dy = 0; dy < height; ++dy) {
+    for (int dx = 0; dx < width; ++dx) {
+      setPixelSafe(image, x + dx, y + dy, color);
+    }
+  }
+}
+
+void paintPattern(sf::Image& image,
+                  int originX,
+                  int originY,
+                  const std::vector<std::string>& pattern,
+                  const std::map<char, sf::Color>& palette,
+                  int scale = 2) {
+  for (std::size_t row = 0; row < pattern.size(); ++row) {
+    for (std::size_t column = 0; column < pattern[row].size(); ++column) {
+      const auto it = palette.find(pattern[row][column]);
+      if (it == palette.end()) {
+        continue;
+      }
+
+      fillRect(image, originX + static_cast<int>(column) * scale, originY + static_cast<int>(row) * scale, scale, scale, it->second);
+    }
+  }
+}
+
+sf::Image buildAtlasImage() {
+  sf::Image image;
+  image.create(208U, 48U, sf::Color(0, 0, 0, 0));
+
+  fillRect(image, 0, 0, 16, 16, rgb(152, 95, 46));
+  fillRect(image, 0, 0, 16, 4, rgb(73, 178, 74));
+  for (int x = 0; x < 16; x += 4) {
+    fillRect(image, x, 6 + (x % 8 == 0 ? 0 : 2), 2, 2, rgb(116, 70, 34));
+  }
+
+  fillRect(image, 16, 0, 16, 16, rgb(194, 112, 58));
+  for (int x = 16; x < 32; x += 8) {
+    fillRect(image, x, 5, 16, 1, rgb(138, 78, 42));
+    fillRect(image, x, 10, 16, 1, rgb(138, 78, 42));
+  }
+  fillRect(image, 20, 2, 2, 4, rgb(143, 83, 40));
+  fillRect(image, 28, 8, 2, 4, rgb(143, 83, 40));
+
+  fillRect(image, 32, 0, 16, 16, rgb(246, 186, 58));
+  fillRect(image, 33, 1, 14, 14, rgb(232, 158, 44));
+  fillRect(image, 38, 4, 4, 2, rgb(255, 230, 166));
+  fillRect(image, 36, 8, 8, 2, rgb(255, 230, 166));
+  fillRect(image, 40, 10, 2, 2, rgb(255, 230, 166));
+
+  fillRect(image, 48, 0, 16, 16, rgb(148, 148, 150));
+  fillRect(image, 49, 1, 14, 14, rgb(124, 124, 128));
+  fillRect(image, 52, 4, 8, 2, rgb(168, 168, 170));
+  fillRect(image, 54, 9, 4, 2, rgb(168, 168, 170));
+
+  fillRect(image, 64, 0, 16, 16, rgb(120, 124, 132));
+  fillRect(image, 65, 1, 14, 14, rgb(98, 102, 110));
+  fillRect(image, 66, 5, 4, 3, rgb(132, 136, 142));
+  fillRect(image, 72, 9, 4, 3, rgb(132, 136, 142));
+
+  fillRect(image, 80, 0, 16, 16, rgb(47, 178, 76));
+  fillRect(image, 81, 1, 14, 14, rgb(34, 146, 60));
+  fillRect(image, 83, 2, 4, 12, rgb(91, 224, 120, 150));
+  fillRect(image, 80, 0, 16, 3, rgb(62, 204, 94));
+  fillRect(image, 80, 12, 16, 4, rgb(31, 128, 54));
+
+  fillRect(image, 96, 0, 16, 16, rgb(47, 178, 76));
+  fillRect(image, 97, 1, 14, 14, rgb(34, 146, 60));
+  fillRect(image, 101, 2, 4, 12, rgb(91, 224, 120, 150));
+  fillRect(image, 96, 0, 16, 3, rgb(62, 204, 94));
+  fillRect(image, 96, 12, 16, 4, rgb(31, 128, 54));
+
+  fillRect(image, 112, 0, 16, 16, rgb(42, 160, 69));
+  fillRect(image, 113, 1, 14, 14, rgb(31, 128, 54));
+  fillRect(image, 116, 2, 4, 12, rgb(91, 224, 120, 120));
+
+  fillRect(image, 128, 0, 16, 16, rgb(42, 160, 69));
+  fillRect(image, 129, 1, 14, 14, rgb(31, 128, 54));
+  fillRect(image, 133, 2, 4, 12, rgb(91, 224, 120, 120));
+
+  fillRect(image, 144, 0, 16, 16, rgb(113, 89, 168));
+  fillRect(image, 144, 5, 16, 6, rgb(143, 120, 210));
+  fillRect(image, 146, 3, 12, 2, rgb(192, 175, 248));
+  fillRect(image, 146, 11, 12, 2, rgb(73, 58, 108));
+
+  fillRect(image, 160, 0, 16, 16, sf::Color(0, 0, 0, 0));
+  fillRect(image, 166, 2, 4, 12, rgb(255, 221, 72));
+  fillRect(image, 165, 4, 6, 8, rgb(237, 175, 50));
+
+  fillRect(image, 176, 0, 16, 16, sf::Color(0, 0, 0, 0));
+  fillRect(image, 181, 2, 6, 12, rgb(255, 221, 72));
+  fillRect(image, 182, 4, 4, 8, rgb(237, 175, 50));
+
+  fillRect(image, 192, 0, 16, 16, sf::Color(0, 0, 0, 0));
+  fillRect(image, 194, 0, 2, 16, rgb(232, 243, 232));
+  fillRect(image, 196, 2, 8, 6, rgb(78, 200, 110));
+
+  const std::map<char, sf::Color> playerPalette{
+      {'R', rgb(210, 48, 48)}, {'B', rgb(45, 112, 212)}, {'S', rgb(255, 218, 182)},
+      {'K', rgb(96, 58, 28)},  {'Y', rgb(255, 232, 178)}, {'W', rgb(255, 255, 255)}};
+  const std::map<char, sf::Color> powerPalette{
+      {'R', rgb(71, 180, 97)}, {'B', rgb(255, 224, 172)}, {'S', rgb(255, 218, 182)},
+      {'K', rgb(96, 58, 28)},  {'Y', rgb(255, 247, 212)}, {'W', rgb(255, 255, 255)}};
+  const std::map<char, sf::Color> walkerPalette{{'B', rgb(148, 95, 45)}, {'D', rgb(97, 57, 22)}, {'W', rgb(255, 248, 234)}};
+  const std::map<char, sf::Color> hopperPalette{{'B', rgb(91, 180, 212)}, {'D', rgb(54, 100, 123)}, {'W', rgb(255, 248, 234)}};
+  const std::map<char, sf::Color> spikyPalette{{'B', rgb(202, 85, 70)}, {'D', rgb(130, 42, 30)}, {'S', rgb(235, 221, 210)}};
+  const std::map<char, sf::Color> flyerPalette{{'B', rgb(123, 92, 210)}, {'D', rgb(70, 50, 130)}, {'W', rgb(255, 248, 234)}};
+  const std::map<char, sf::Color> mushroomPalette{
+      {'R', rgb(228, 54, 54)}, {'W', rgb(255, 246, 236)}, {'S', rgb(255, 227, 190)}, {'K', rgb(180, 130, 60)}};
+
+  paintPattern(image, 0, 16,
+               {"..RRRR..", ".RRRRRR.", ".SSSSSS.", "..KSSK..", "..BBBB..", ".RBBBBR.", ".B.KK.B.", "KK....KK"},
+               playerPalette);
+  paintPattern(image, 16, 16,
+               {"..RRRR..", ".RRRRRR.", ".SSSSSS.", "...KSK..", "..BBBB..", ".RBBBBR.", ".BK.KB..", "KK...KK."},
+               playerPalette);
+  paintPattern(image, 32, 16,
+               {"..RRRR..", ".RRRRRR.", ".SSSSSS.", "..KSS...", "..BBBBR.", ".RBBBB..", "..BK.KB.", ".KK...KK"},
+               playerPalette);
+  paintPattern(image, 48, 16,
+               {"..RRRR..", ".RRRRRR.", ".SSSSSS.", "..KSSK..", "..BBBB..", ".RBBBBR.", ".B....B.", "KK....KK"},
+               playerPalette);
+  paintPattern(image, 64, 16,
+               {"..RRRR..", ".RRRRRR.", ".SSSSSS.", "..KSSK..", "..BBBB..", ".YBBBBY.", ".BKKKKB.", "KK....KK"},
+               powerPalette);
+  paintPattern(image, 80, 16,
+               {"..RRRR..", ".RRRRRR.", ".SSSSSS.", "...KSK..", "..BBBB..", ".YBBBBY.", ".BK.KB..", "KK...KK."},
+               powerPalette);
+  paintPattern(image, 96, 16,
+               {"..RRRR..", ".RRRRRR.", ".SSSSSS.", "..KSS...", "..BBBBY.", ".YBBBB..", "..BK.KB.", ".KK...KK"},
+               powerPalette);
+  paintPattern(image, 112, 16,
+               {"..RRRR..", ".RRRRRR.", ".SSSSSS.", "..KSSK..", "..BBBB..", ".YBBBBY.", ".B....B.", "KK....KK"},
+               powerPalette);
+
+  paintPattern(image, 0, 32,
+               {"........", "..BBBB..", ".BBBBBB.", ".WW..WW.", ".BBBBBB.", ".BBBBBB.", "..DDDD..", ".D....D."},
+               walkerPalette);
+  paintPattern(image, 16, 32,
+               {"........", "..BBBB..", ".BBBBBB.", ".WW..WW.", ".BBBBBB.", ".BBBBBB.", ".DD..DD.", "D......D"},
+               walkerPalette);
+  paintPattern(image, 32, 32,
+               {"........", "..BBBB..", ".BBBBBB.", ".WW..WW.", ".BBBBBB.", ".BBDDDB.", "..DDDD..", ".D....D."},
+               hopperPalette);
+  paintPattern(image, 48, 32,
+               {"........", "..BBBB..", ".BBBBBB.", ".WW..WW.", ".BBDBBB.", ".BBBBBB.", ".DD..DD.", "D......D"},
+               hopperPalette);
+  paintPattern(image, 64, 32,
+               {"..S..S..", ".SSSSSS.", ".BBBBBB.", "SBBBBBBS", ".BWWWWB.", ".BBBBBB.", "..DDDD..", ".D....D."},
+               spikyPalette);
+  paintPattern(image, 80, 32,
+               {"..S..S..", ".SSSSSS.", ".BBBBBB.", "SBBBBBBS", ".BWWWWB.", ".BBBBBB.", ".DD..DD.", "D......D"},
+               spikyPalette);
+  paintPattern(image, 96, 32,
+               {"........", "..BBBB..", ".BBBBBB.", "BBBBBBBB", ".WW..WW.", ".BBBBBB.", "..DDDD..", ".D....D."},
+               flyerPalette);
+  paintPattern(image, 112, 32,
+               {"........", "..BBBB..", ".BBBBBB.", "BBBBBBBB", ".WW..WW.", ".BBBBBB.", ".DD..DD.", "D......D"},
+               flyerPalette);
+  paintPattern(image, 128, 32,
+               {"..RRRR..", ".RWWWWR.", "RRRWWRRR", "..SSSS..", "..SKKS..", "...KK...", "..K..K..", ".K....K."},
+               mushroomPalette);
+
+  return image;
+}
+
+SpriteId playerSprite(bool superForm, float velocityX, float velocityY, float animationTimer) {
+  if (velocityY < -40.0f || velocityY > 80.0f) {
+    return superForm ? SpriteId::PlayerPowerJump : SpriteId::PlayerJump;
+  }
+
+  if (std::abs(velocityX) > 40.0f) {
+    const bool alternate = static_cast<int>(animationTimer * 10.0f) % 2 == 0;
+    if (superForm) {
+      return alternate ? SpriteId::PlayerPowerRunA : SpriteId::PlayerPowerRunB;
+    }
+    return alternate ? SpriteId::PlayerRunA : SpriteId::PlayerRunB;
+  }
+
+  return superForm ? SpriteId::PlayerPowerIdle : SpriteId::PlayerIdle;
+}
+
+SpriteId enemySprite(PlatformerWorld::EnemyType type, float animationTimer) {
+  const bool alternate = static_cast<int>(animationTimer * 8.0f) % 2 == 0;
+  switch (type) {
+    case PlatformerWorld::EnemyType::Walker:
+      return alternate ? SpriteId::WalkerA : SpriteId::WalkerB;
+    case PlatformerWorld::EnemyType::Hopper:
+      return alternate ? SpriteId::HopperA : SpriteId::HopperB;
+    case PlatformerWorld::EnemyType::Spiky:
+      return alternate ? SpriteId::SpikyA : SpriteId::SpikyB;
+    case PlatformerWorld::EnemyType::Flyer:
+      return alternate ? SpriteId::FlyerA : SpriteId::FlyerB;
+  }
+  return SpriteId::WalkerA;
+}
+
 }  // namespace
 
 PlatformerWorld::PlatformerWorld() {
   worldView_.setSize(kScreenWidth, kScreenHeight);
   worldView_.setCenter(kScreenWidth * 0.5f, kScreenHeight * 0.5f);
-  resetRun();
-  screenState_ = ScreenState::Title;
+  initializeAtlas();
 }
 
 void PlatformerWorld::setFont(const sf::Font* font, bool hasFont) {
@@ -64,11 +399,44 @@ void PlatformerWorld::setFont(const sf::Font* font, bool hasFont) {
 }
 
 void PlatformerWorld::handleKeyPressed(sf::Keyboard::Key key) {
-  if (screenState_ == ScreenState::Title || screenState_ == ScreenState::LevelClear || screenState_ == ScreenState::GameOver) {
-    if (key == sf::Keyboard::Enter || key == sf::Keyboard::Space) {
-      startGame();
-    }
-    return;
+  switch (screenState_) {
+    case ScreenState::Title:
+      if (key == sf::Keyboard::Enter || key == sf::Keyboard::Space) {
+        startNewCampaign();
+      }
+      return;
+    case ScreenState::Overworld:
+      if (key == sf::Keyboard::Left || key == sf::Keyboard::A) {
+        selectedLevelIndex_ = std::max(0, selectedLevelIndex_ - 1);
+      } else if (key == sf::Keyboard::Right || key == sf::Keyboard::D) {
+        selectedLevelIndex_ = std::min(unlockedLevelCount_ - 1, selectedLevelIndex_ + 1);
+      } else if (key == sf::Keyboard::Enter || key == sf::Keyboard::Space) {
+        beginLevel(selectedLevelIndex_);
+      } else if (key == sf::Keyboard::Escape) {
+        screenState_ = ScreenState::Title;
+      }
+      return;
+    case ScreenState::LevelIntro:
+      return;
+    case ScreenState::LevelClear:
+      if (key == sf::Keyboard::Enter || key == sf::Keyboard::Space) {
+        if (campaignCleared_) {
+          screenState_ = ScreenState::Title;
+        } else {
+          selectedLevelIndex_ = std::min(unlockedLevelCount_ - 1, currentLevelIndex_ + 1);
+          enterOverworld();
+        }
+      }
+      return;
+    case ScreenState::GameOver:
+      if (key == sf::Keyboard::Enter || key == sf::Keyboard::Space) {
+        startNewCampaign();
+      } else if (key == sf::Keyboard::Escape) {
+        screenState_ = ScreenState::Title;
+      }
+      return;
+    case ScreenState::Playing:
+      break;
   }
 
   switch (key) {
@@ -94,10 +462,10 @@ void PlatformerWorld::handleKeyPressed(sf::Keyboard::Key key) {
       jumpHeld_ = true;
       break;
     case sf::Keyboard::R:
-      resetLife(true);
+      resetCurrentLevel(true);
       break;
     case sf::Keyboard::Escape:
-      screenState_ = ScreenState::Title;
+      enterOverworld();
       break;
     default:
       break;
@@ -105,6 +473,10 @@ void PlatformerWorld::handleKeyPressed(sf::Keyboard::Key key) {
 }
 
 void PlatformerWorld::handleKeyReleased(sf::Keyboard::Key key) {
+  if (screenState_ != ScreenState::Playing) {
+    return;
+  }
+
   switch (key) {
     case sf::Keyboard::Left:
     case sf::Keyboard::A:
@@ -134,28 +506,51 @@ void PlatformerWorld::handleKeyReleased(sf::Keyboard::Key key) {
 
 void PlatformerWorld::update(float deltaSeconds) {
   titlePulse_ += deltaSeconds;
+  animationTimer_ += deltaSeconds;
 
-  if (screenState_ != ScreenState::Playing) {
-    return;
+  switch (screenState_) {
+    case ScreenState::Title:
+    case ScreenState::Overworld:
+    case ScreenState::LevelClear:
+    case ScreenState::GameOver:
+      return;
+    case ScreenState::LevelIntro:
+      updateIntro(deltaSeconds);
+      return;
+    case ScreenState::Playing:
+      updatePlaying(deltaSeconds);
+      return;
   }
-
-  updatePlaying(deltaSeconds);
 }
 
 void PlatformerWorld::render(sf::RenderWindow& window) const {
-  sf::View previousView = window.getView();
+  window.setView(window.getDefaultView());
+
+  if (screenState_ == ScreenState::Title) {
+    drawMenuBackground(window);
+    drawTitleScreen(window);
+    return;
+  }
+
+  if (screenState_ == ScreenState::Overworld) {
+    drawMenuBackground(window);
+    drawOverworld(window);
+    return;
+  }
+
   sf::View worldView = worldView_;
   worldView.setCenter(cameraX_ + kScreenWidth * 0.5f, kScreenHeight * 0.5f);
   window.setView(worldView);
 
   drawBackground(window);
   drawTiles(window);
+  drawPlatforms(window);
   drawCoins(window);
   drawMushrooms(window);
   drawEnemies(window);
   drawPlayer(window);
 
-  window.setView(previousView);
+  window.setView(window.getDefaultView());
   drawHud(window);
   drawOverlay(window);
 }
@@ -166,146 +561,340 @@ std::vector<WorldAudioEvent> PlatformerWorld::consumeAudioEvents() {
   return events;
 }
 
-void PlatformerWorld::buildLevel() {
-  width_ = 220;
-  height_ = 15;
-  tiles_.assign(static_cast<std::size_t>(width_ * height_), TileType::Empty);
-  coins_.clear();
-  enemies_.clear();
-  mushrooms_.clear();
-  flagColumn_ = 210;
-  timeRemaining_ = 400.0f;
+void PlatformerWorld::initializeAtlas() {
+  const sf::Image atlas = buildAtlasImage();
+  hasAtlas_ = atlasTexture_.loadFromImage(atlas);
+  if (hasAtlas_) {
+    atlasTexture_.setSmooth(false);
+  }
+}
+
+void PlatformerWorld::startNewCampaign() {
+  player_ = Player{};
+  unlockedLevelCount_ = 1;
+  selectedLevelIndex_ = 0;
+  currentLevelIndex_ = 0;
+  campaignCleared_ = false;
+  enterOverworld();
+}
+
+void PlatformerWorld::beginLevel(int levelIndex) {
+  buildLevel(levelIndex);
+  screenState_ = ScreenState::LevelIntro;
+  levelIntroTimer_ = 1.45f;
+  pushAudio(WorldAudioEvent::Start);
+}
+
+void PlatformerWorld::resetCurrentLevel(bool preserveProgress) {
+  const int coins = preserveProgress ? player_.coins : 0;
+  const int lives = preserveProgress ? player_.lives : 4;
+  const int score = preserveProgress ? player_.score : 0;
+
+  player_.superForm = false;
+  player_.size = {36.0f, 46.0f};
+  player_.invulnerable = false;
+  player_.invulnerableTimer = 0.0f;
+  player_.coins = coins;
+  player_.lives = lives;
+  player_.score = score;
+  beginLevel(currentLevelIndex_);
+}
+
+void PlatformerWorld::buildLevel(int levelIndex) {
+  currentLevelIndex_ = std::clamp(levelIndex, 0, kLevelCount - 1);
+  const LevelDescriptor& descriptor = kLevels[static_cast<std::size_t>(currentLevelIndex_)];
+  currentLevelCode_ = descriptor.code;
+  currentLevelName_ = descriptor.name;
+  currentLevelSubtitle_ = descriptor.subtitle;
+  skyTop_ = descriptor.skyTop;
+  skyBottom_ = descriptor.skyBottom;
+  hillFar_ = descriptor.hillFar;
+  hillNear_ = descriptor.hillNear;
+  timeRemaining_ = descriptor.timeLimit;
   cameraX_ = 0.0f;
-  jumpQueued_ = false;
+  standingPlatformIndex_ = -1;
   moveLeftHeld_ = false;
   moveRightHeld_ = false;
   runHeld_ = false;
   jumpHeld_ = false;
+  jumpQueued_ = false;
+  enemies_.clear();
+  coins_.clear();
+  mushrooms_.clear();
+  platforms_.clear();
 
-  auto fill = [&](int left, int top, int right, int bottom, TileType tile) {
-    for (int y = top; y <= bottom; ++y) {
-      for (int x = left; x <= right; ++x) {
-        setTile(x, y, tile);
-      }
-    }
-  };
-
-  auto addCoin = [&](int tileX, int tileY) {
-    coins_.push_back(Coin{{tileX * kTileSize + kTileSize * 0.5f, tileY * kTileSize + kTileSize * 0.5f}, false});
-  };
-
-  auto addEnemy = [&](int tileX, int tileY) {
-    Enemy enemy;
-    enemy.position = {tileX * kTileSize + 6.0f, tileY * kTileSize + (kTileSize - enemy.size.y)};
-    enemy.velocity.x = -kEnemySpeed;
-    enemies_.push_back(enemy);
-  };
-
-  auto placePipe = [&](int column, int heightTiles) {
-    const int topRow = 13 - heightTiles;
-    setTile(column, topRow, TileType::PipeCapLeft);
-    setTile(column + 1, topRow, TileType::PipeCapRight);
-    for (int y = topRow + 1; y <= 12; ++y) {
-      setTile(column, y, TileType::PipeLeft);
-      setTile(column + 1, y, TileType::PipeRight);
-    }
-  };
-
-  fill(0, 13, width_ - 1, 14, TileType::Ground);
-  for (const auto& gap : std::array<std::pair<int, int>, 5>{{{28, 31}, {59, 62}, {88, 91}, {141, 145}, {176, 179}}}) {
-    fill(gap.first, 13, gap.second, 14, TileType::Empty);
+  switch (currentLevelIndex_) {
+    case 0:
+      buildVerdantRun();
+      break;
+    case 1:
+      buildFoundryNight();
+      break;
+    case 2:
+      buildSkyBridge();
+      break;
+    default:
+      buildVerdantRun();
+      break;
   }
 
-  fill(12, 9, 15, 9, TileType::Brick);
-  setTile(16, 9, TileType::QuestionCoin);
-  setTile(17, 9, TileType::QuestionMushroom);
-  setTile(18, 9, TileType::QuestionCoin);
-  fill(33, 10, 35, 10, TileType::Brick);
-  setTile(36, 10, TileType::QuestionCoin);
-  fill(49, 8, 52, 8, TileType::Brick);
-  setTile(53, 8, TileType::QuestionCoin);
-  fill(74, 9, 78, 9, TileType::Stone);
-  fill(98, 10, 101, 10, TileType::Brick);
-  setTile(102, 10, TileType::QuestionCoin);
-  setTile(103, 10, TileType::QuestionCoin);
-  fill(121, 8, 125, 8, TileType::Brick);
-  setTile(126, 8, TileType::QuestionMushroom);
-  fill(150, 9, 154, 9, TileType::Stone);
-  fill(167, 7, 170, 7, TileType::Brick);
-  setTile(171, 7, TileType::QuestionCoin);
-  fill(191, 12, 191, 12, TileType::Stone);
-  fill(192, 11, 192, 12, TileType::Stone);
-  fill(193, 10, 193, 12, TileType::Stone);
-  fill(194, 9, 194, 12, TileType::Stone);
-  fill(195, 8, 195, 12, TileType::Stone);
-  fill(196, 7, 196, 12, TileType::Stone);
-  fill(197, 6, 197, 12, TileType::Stone);
-  fill(205, 10, 208, 12, TileType::Stone);
-
-  placePipe(44, 3);
-  placePipe(66, 4);
-  placePipe(111, 3);
-  placePipe(156, 5);
-
-  for (int x = 13; x <= 18; ++x) {
-    addCoin(x, 7);
-  }
-  for (int x = 49; x <= 53; ++x) {
-    addCoin(x, 6);
-  }
-  for (int x = 98; x <= 103; ++x) {
-    addCoin(x, 8);
-  }
-  for (int x = 167; x <= 171; ++x) {
-    addCoin(x, 5);
-  }
-  for (int x = 182; x <= 188; ++x) {
-    addCoin(x, 9 - std::abs(x - 185));
-  }
-
-  for (int x : {22, 34, 47, 70, 72, 96, 118, 134, 161, 186}) {
-    addEnemy(x, 12);
-  }
-
-  player_.position = {2.0f * kTileSize, 13.0f * kTileSize - player_.size.y};
-  player_.previousPosition = player_.position;
+  player_.position = playerSpawn_;
+  player_.previousPosition = playerSpawn_;
   player_.velocity = {};
   player_.onGround = false;
   player_.facingRight = true;
 }
 
-void PlatformerWorld::resetRun() {
-  player_.coins = 0;
-  player_.lives = 3;
-  player_.score = 0;
-  player_.superForm = false;
-  player_.size = {34.0f, 46.0f};
-  player_.invulnerable = false;
-  player_.invulnerableTimer = 0.0f;
-  buildLevel();
+void PlatformerWorld::buildVerdantRun() {
+  width_ = 180;
+  height_ = 15;
+  flagColumn_ = 172;
+  playerSpawn_ = {2.0f * kTileSize, 13.0f * kTileSize - player_.size.y};
+  tiles_.assign(static_cast<std::size_t>(width_ * height_), TileType::Empty);
+
+  fillTiles(0, 13, width_ - 1, 14, TileType::Ground);
+  for (const auto& gap : std::array<std::pair<int, int>, 4>{{{28, 31}, {63, 66}, {103, 107}, {150, 153}}}) {
+    fillTiles(gap.first, 13, gap.second, 14, TileType::Empty);
+  }
+
+  fillTiles(12, 9, 15, 9, TileType::Brick);
+  setTile(16, 9, TileType::QuestionCoin);
+  setTile(17, 9, TileType::QuestionMushroom);
+  setTile(18, 9, TileType::QuestionCoin);
+  fillTiles(34, 10, 38, 10, TileType::Brick);
+  setTile(39, 10, TileType::QuestionCoin);
+  fillTiles(69, 9, 73, 9, TileType::Stone);
+  fillTiles(92, 8, 95, 8, TileType::Brick);
+  setTile(96, 8, TileType::QuestionCoin);
+  fillTiles(130, 10, 132, 10, TileType::Brick);
+  setTile(133, 10, TileType::QuestionMushroom);
+  fillTiles(160, 12, 160, 12, TileType::Stone);
+  fillTiles(161, 11, 161, 12, TileType::Stone);
+  fillTiles(162, 10, 162, 12, TileType::Stone);
+  fillTiles(163, 9, 163, 12, TileType::Stone);
+  fillTiles(164, 8, 164, 12, TileType::Stone);
+  fillTiles(165, 7, 165, 12, TileType::Stone);
+
+  placePipe(42, 3);
+  placePipe(78, 4);
+  placePipe(116, 3);
+
+  addCoinLine(12, 18, 7);
+  addCoinLine(34, 39, 8);
+  addCoinArc(90, 7, 3);
+  addCoinLine(128, 134, 8);
+  addCoinArc(159, 7, 4);
+
+  addMovingPlatform({54.0f * kTileSize, 9.2f * kTileSize}, {72.0f, 18.0f}, {118.0f, 0.0f}, 0.9f, 0.0f);
+  addMovingPlatform({140.0f * kTileSize, 8.0f * kTileSize}, {72.0f, 18.0f}, {0.0f, 94.0f}, 1.1f, 1.2f);
+
+  spawnEnemy(EnemyType::Walker, 22, 12);
+  spawnEnemy(EnemyType::Walker, 46, 12);
+  spawnEnemy(EnemyType::Hopper, 70, 12);
+  spawnEnemy(EnemyType::Spiky, 90, 12);
+  spawnEnemy(EnemyType::Walker, 122, 12);
+  spawnEnemy(EnemyType::Flyer, 141, 8, -1.0f);
+  spawnEnemy(EnemyType::Hopper, 158, 12);
 }
 
-void PlatformerWorld::resetLife(bool keepProgress) {
-  const int coins = keepProgress ? player_.coins : 0;
-  const int lives = keepProgress ? player_.lives : 3;
-  const int score = keepProgress ? player_.score : 0;
+void PlatformerWorld::buildFoundryNight() {
+  width_ = 194;
+  height_ = 15;
+  flagColumn_ = 186;
+  playerSpawn_ = {2.0f * kTileSize, 13.0f * kTileSize - player_.size.y};
+  tiles_.assign(static_cast<std::size_t>(width_ * height_), TileType::Empty);
 
-  player_.superForm = false;
-  player_.size = {34.0f, 46.0f};
-  player_.invulnerable = false;
-  player_.invulnerableTimer = 0.0f;
+  fillTiles(0, 13, width_ - 1, 14, TileType::Ground);
+  fillTiles(18, 11, 24, 12, TileType::Stone);
+  fillTiles(32, 9, 35, 12, TileType::Stone);
+  fillTiles(49, 10, 52, 12, TileType::Stone);
+  fillTiles(65, 8, 71, 8, TileType::Brick);
+  setTile(72, 8, TileType::QuestionCoin);
+  setTile(73, 8, TileType::QuestionMushroom);
+  fillTiles(90, 10, 94, 12, TileType::Stone);
+  fillTiles(110, 9, 114, 9, TileType::Brick);
+  setTile(115, 9, TileType::QuestionCoin);
+  fillTiles(136, 12, 136, 12, TileType::Stone);
+  fillTiles(137, 11, 137, 12, TileType::Stone);
+  fillTiles(138, 10, 138, 12, TileType::Stone);
+  fillTiles(139, 9, 139, 12, TileType::Stone);
+  fillTiles(140, 8, 140, 12, TileType::Stone);
+  fillTiles(161, 8, 165, 8, TileType::Brick);
+  setTile(166, 8, TileType::QuestionCoin);
 
-  buildLevel();
+  for (const auto& gap : std::array<std::pair<int, int>, 4>{{{37, 40}, {79, 82}, {121, 124}, {170, 173}}}) {
+    fillTiles(gap.first, 13, gap.second, 14, TileType::Empty);
+  }
 
-  player_.coins = coins;
-  player_.lives = lives;
-  player_.score = score;
+  placePipe(57, 3);
+  placePipe(100, 5);
+  placePipe(149, 4);
+
+  addCoinLine(18, 24, 9);
+  addCoinArc(69, 6, 4);
+  addCoinLine(110, 116, 7);
+  addCoinArc(145, 6, 5);
+  addCoinLine(178, 184, 8);
+
+  addMovingPlatform({43.0f * kTileSize, 9.0f * kTileSize}, {72.0f, 18.0f}, {0.0f, 110.0f}, 1.0f, 0.4f);
+  addMovingPlatform({84.0f * kTileSize, 8.2f * kTileSize}, {72.0f, 18.0f}, {104.0f, 0.0f}, 0.85f, 1.1f);
+  addMovingPlatform({127.0f * kTileSize, 7.5f * kTileSize}, {72.0f, 18.0f}, {0.0f, 132.0f}, 1.15f, 2.4f);
+
+  spawnEnemy(EnemyType::Walker, 16, 12);
+  spawnEnemy(EnemyType::Spiky, 29, 12);
+  spawnEnemy(EnemyType::Hopper, 54, 12);
+  spawnEnemy(EnemyType::Walker, 76, 12);
+  spawnEnemy(EnemyType::Flyer, 93, 8);
+  spawnEnemy(EnemyType::Spiky, 118, 12);
+  spawnEnemy(EnemyType::Hopper, 144, 12);
+  spawnEnemy(EnemyType::Flyer, 176, 7);
 }
 
-void PlatformerWorld::startGame() {
-  resetRun();
-  screenState_ = ScreenState::Playing;
-  pushAudio(WorldAudioEvent::Start);
+void PlatformerWorld::buildSkyBridge() {
+  width_ = 214;
+  height_ = 15;
+  flagColumn_ = 206;
+  playerSpawn_ = {2.0f * kTileSize, 13.0f * kTileSize - player_.size.y};
+  tiles_.assign(static_cast<std::size_t>(width_ * height_), TileType::Empty);
+
+  fillTiles(0, 13, 22, 14, TileType::Ground);
+  fillTiles(31, 13, 48, 14, TileType::Ground);
+  fillTiles(57, 13, 80, 14, TileType::Ground);
+  fillTiles(89, 13, 109, 14, TileType::Ground);
+  fillTiles(118, 13, 142, 14, TileType::Ground);
+  fillTiles(152, 13, 178, 14, TileType::Ground);
+  fillTiles(188, 13, width_ - 1, 14, TileType::Ground);
+
+  fillTiles(18, 10, 21, 10, TileType::Brick);
+  setTile(22, 10, TileType::QuestionCoin);
+  fillTiles(63, 8, 66, 8, TileType::Brick);
+  setTile(67, 8, TileType::QuestionMushroom);
+  fillTiles(122, 10, 125, 10, TileType::Brick);
+  setTile(126, 10, TileType::QuestionCoin);
+  fillTiles(168, 9, 172, 9, TileType::Stone);
+  fillTiles(198, 12, 198, 12, TileType::Stone);
+  fillTiles(199, 11, 199, 12, TileType::Stone);
+  fillTiles(200, 10, 200, 12, TileType::Stone);
+  fillTiles(201, 9, 201, 12, TileType::Stone);
+  fillTiles(202, 8, 202, 12, TileType::Stone);
+
+  addCoinLine(18, 22, 8);
+  addCoinArc(52, 7, 4);
+  addCoinArc(87, 6, 5);
+  addCoinArc(117, 7, 4);
+  addCoinLine(166, 173, 7);
+
+  addMovingPlatform({24.0f * kTileSize, 9.0f * kTileSize}, {72.0f, 18.0f}, {132.0f, 0.0f}, 0.8f, 0.0f);
+  addMovingPlatform({50.0f * kTileSize, 7.2f * kTileSize}, {72.0f, 18.0f}, {0.0f, 126.0f}, 1.0f, 1.1f);
+  addMovingPlatform({82.0f * kTileSize, 8.0f * kTileSize}, {72.0f, 18.0f}, {118.0f, 0.0f}, 0.9f, 2.3f);
+  addMovingPlatform({111.0f * kTileSize, 7.0f * kTileSize}, {72.0f, 18.0f}, {0.0f, 118.0f}, 1.2f, 0.8f);
+  addMovingPlatform({145.0f * kTileSize, 8.8f * kTileSize}, {72.0f, 18.0f}, {126.0f, 0.0f}, 0.85f, 1.8f);
+  addMovingPlatform({180.0f * kTileSize, 6.8f * kTileSize}, {72.0f, 18.0f}, {0.0f, 124.0f}, 1.15f, 2.6f);
+
+  spawnEnemy(EnemyType::Walker, 13, 12);
+  spawnEnemy(EnemyType::Flyer, 38, 7);
+  spawnEnemy(EnemyType::Hopper, 66, 12);
+  spawnEnemy(EnemyType::Spiky, 98, 12);
+  spawnEnemy(EnemyType::Flyer, 127, 7, -1.0f);
+  spawnEnemy(EnemyType::Hopper, 160, 12);
+  spawnEnemy(EnemyType::Flyer, 191, 6, -1.0f);
+}
+
+void PlatformerWorld::fillTiles(int left, int top, int right, int bottom, TileType tile) {
+  for (int tileY = top; tileY <= bottom; ++tileY) {
+    for (int tileX = left; tileX <= right; ++tileX) {
+      setTile(tileX, tileY, tile);
+    }
+  }
+}
+
+void PlatformerWorld::placePipe(int column, int heightTiles) {
+  const int topRow = 13 - heightTiles;
+  setTile(column, topRow, TileType::PipeCapLeft);
+  setTile(column + 1, topRow, TileType::PipeCapRight);
+  for (int tileY = topRow + 1; tileY <= 12; ++tileY) {
+    setTile(column, tileY, TileType::PipeBodyLeft);
+    setTile(column + 1, tileY, TileType::PipeBodyRight);
+  }
+}
+
+void PlatformerWorld::addCoin(int tileX, int tileY) {
+  coins_.push_back(Coin{{tileX * kTileSize + kTileSize * 0.5f, tileY * kTileSize + kTileSize * 0.5f}, false,
+                        static_cast<float>(coins_.size()) * 0.31f});
+}
+
+void PlatformerWorld::addCoinLine(int left, int right, int tileY) {
+  for (int tileX = left; tileX <= right; ++tileX) {
+    addCoin(tileX, tileY);
+  }
+}
+
+void PlatformerWorld::addCoinArc(int centerX, int baseTileY, int radiusTiles) {
+  for (int offset = -radiusTiles; offset <= radiusTiles; ++offset) {
+    const float normalized = static_cast<float>(offset) / std::max(1.0f, static_cast<float>(radiusTiles));
+    const int tileY = baseTileY - static_cast<int>(std::round((1.0f - normalized * normalized) * static_cast<float>(radiusTiles)));
+    addCoin(centerX + offset, tileY);
+  }
+}
+
+void PlatformerWorld::spawnEnemy(EnemyType type, int tileX, int tileY, float direction) {
+  Enemy enemy;
+  enemy.type = type;
+  enemy.position = {tileX * kTileSize + 6.0f, tileY * kTileSize + 2.0f};
+  enemy.baseY = enemy.position.y;
+  enemy.phase = static_cast<float>(enemies_.size()) * 0.9f;
+  enemy.facingRight = direction > 0.0f;
+
+  switch (type) {
+    case EnemyType::Walker:
+      enemy.size = {36.0f, 32.0f};
+      enemy.velocity.x = direction * kEnemySpeed;
+      enemy.position.y = tileY * kTileSize + (kTileSize - enemy.size.y);
+      break;
+    case EnemyType::Hopper:
+      enemy.size = {36.0f, 34.0f};
+      enemy.velocity.x = direction * 74.0f;
+      enemy.position.y = tileY * kTileSize + (kTileSize - enemy.size.y);
+      break;
+    case EnemyType::Spiky:
+      enemy.size = {38.0f, 34.0f};
+      enemy.velocity.x = direction * 66.0f;
+      enemy.position.y = tileY * kTileSize + (kTileSize - enemy.size.y);
+      break;
+    case EnemyType::Flyer:
+      enemy.size = {40.0f, 30.0f};
+      enemy.velocity.x = direction * 108.0f;
+      enemy.baseY = tileY * kTileSize + 6.0f;
+      enemy.position.y = enemy.baseY;
+      break;
+  }
+
+  enemies_.push_back(enemy);
+}
+
+void PlatformerWorld::addMovingPlatform(const sf::Vector2f& position,
+                                        const sf::Vector2f& size,
+                                        const sf::Vector2f& travel,
+                                        float speed,
+                                        float phase) {
+  MovingPlatform platform;
+  platform.basePosition = position;
+  platform.previousPosition = position;
+  platform.position = position;
+  platform.size = size;
+  platform.travel = travel;
+  platform.speed = speed;
+  platform.phase = phase;
+  platforms_.push_back(platform);
+}
+
+void PlatformerWorld::updateIntro(float deltaSeconds) {
+  updatePlatforms(deltaSeconds);
+  updateCamera(deltaSeconds);
+  levelIntroTimer_ = std::max(0.0f, levelIntroTimer_ - deltaSeconds);
+  if (levelIntroTimer_ <= 0.0f) {
+    screenState_ = ScreenState::Playing;
+  }
 }
 
 void PlatformerWorld::updatePlaying(float deltaSeconds) {
@@ -323,6 +912,7 @@ void PlatformerWorld::updatePlaying(float deltaSeconds) {
     player_.invulnerable = player_.invulnerableTimer > 0.0f;
   }
 
+  updatePlatforms(deltaSeconds);
   updatePlayer(deltaSeconds);
   updateEnemies(deltaSeconds);
   updateMushrooms(deltaSeconds);
@@ -335,14 +925,21 @@ void PlatformerWorld::updatePlaying(float deltaSeconds) {
     return;
   }
 
-  const sf::FloatRect flagBounds(flagColumn_ * kTileSize + 14.0f, 4.0f * kTileSize, 18.0f, 9.0f * kTileSize);
-  if (intersects(playerBounds(), flagBounds) || player_.position.x > flagColumn_ * kTileSize + 18.0f) {
+  const sf::FloatRect flagBounds(flagColumn_ * kTileSize + 10.0f, 4.0f * kTileSize, 20.0f, 9.0f * kTileSize);
+  if (intersects(playerBounds(), flagBounds) || player_.position.x > flagColumn_ * kTileSize + 24.0f) {
     completeLevel();
   }
 }
 
 void PlatformerWorld::updatePlayer(float deltaSeconds) {
   player_.previousPosition = player_.position;
+  if (standingPlatformIndex_ >= 0 && standingPlatformIndex_ < static_cast<int>(platforms_.size())) {
+    const sf::Vector2f platformDelta = platforms_[static_cast<std::size_t>(standingPlatformIndex_)].position -
+                                       platforms_[static_cast<std::size_t>(standingPlatformIndex_)].previousPosition;
+    player_.position += platformDelta;
+    player_.previousPosition += platformDelta;
+  }
+  standingPlatformIndex_ = -1;
 
   const float targetSpeed = runHeld_ ? kRunSpeed : kWalkSpeed;
   if (moveLeftHeld_ == moveRightHeld_) {
@@ -371,8 +968,10 @@ void PlatformerWorld::updatePlayer(float deltaSeconds) {
 
   player_.position.x += player_.velocity.x * deltaSeconds;
   resolveHorizontalCollision(player_.position, player_.velocity, player_.size, false);
+
   player_.position.y += player_.velocity.y * deltaSeconds;
   resolveVerticalCollision(player_.position, player_.velocity, player_.size, player_.onGround, true);
+  resolvePlayerPlatformCollisions();
 
   player_.position.x = std::max(0.0f, player_.position.x);
 }
@@ -383,6 +982,9 @@ void PlatformerWorld::updateEnemies(float deltaSeconds) {
       continue;
     }
 
+    enemy.previousPosition = enemy.position;
+    enemy.behaviorTimer += deltaSeconds;
+
     if (enemy.squashed) {
       enemy.squashTimer = std::max(0.0f, enemy.squashTimer - deltaSeconds);
       if (enemy.squashTimer <= 0.0f) {
@@ -391,19 +993,43 @@ void PlatformerWorld::updateEnemies(float deltaSeconds) {
       continue;
     }
 
+    if (enemy.type == EnemyType::Flyer) {
+      enemy.position.x += enemy.velocity.x * deltaSeconds;
+      enemy.position.y = enemy.baseY + std::sin(animationTimer_ * 3.0f + enemy.phase) * 16.0f;
+      resolveHorizontalCollision(enemy.position, enemy.velocity, enemy.size, true);
+      enemy.facingRight = enemy.velocity.x > 0.0f;
+      continue;
+    }
+
+    if (enemy.type == EnemyType::Hopper && enemy.onGround && enemy.behaviorTimer >= 1.3f) {
+      enemy.velocity.y = -520.0f;
+      enemy.behaviorTimer = 0.0f;
+    }
+
     enemy.velocity.y = std::min(kMaxFallSpeed, enemy.velocity.y + kGravity * deltaSeconds);
-    if (enemy.velocity.x == 0.0f) {
-      enemy.velocity.x = -kEnemySpeed;
+    if (std::abs(enemy.velocity.x) < 10.0f) {
+      enemy.velocity.x = (enemy.facingRight ? 1.0f : -1.0f) *
+                         (enemy.type == EnemyType::Spiky ? 66.0f : enemy.type == EnemyType::Hopper ? 74.0f : kEnemySpeed);
     }
 
     enemy.position.x += enemy.velocity.x * deltaSeconds;
     resolveHorizontalCollision(enemy.position, enemy.velocity, enemy.size, true);
     enemy.position.y += enemy.velocity.y * deltaSeconds;
     resolveVerticalCollision(enemy.position, enemy.velocity, enemy.size, enemy.onGround, false);
+    enemy.facingRight = enemy.velocity.x > 0.0f;
 
     if (enemy.position.y > height_ * kTileSize + 100.0f) {
       enemy.alive = false;
     }
+  }
+}
+
+void PlatformerWorld::updatePlatforms(float deltaSeconds) {
+  for (MovingPlatform& platform : platforms_) {
+    platform.previousPosition = platform.position;
+    platform.phase += deltaSeconds * platform.speed;
+    platform.position.x = platform.basePosition.x + std::sin(platform.phase) * platform.travel.x;
+    platform.position.y = platform.basePosition.y + std::sin(platform.phase) * platform.travel.y;
   }
 }
 
@@ -438,7 +1064,7 @@ void PlatformerWorld::updateMushrooms(float deltaSeconds) {
 }
 
 void PlatformerWorld::updateCamera(float) {
-  const float target = clampf(player_.position.x - kScreenWidth * 0.35f, 0.0f, std::max(0.0f, width_ * kTileSize - kScreenWidth));
+  const float target = clampf(player_.position.x - kScreenWidth * 0.34f, 0.0f, std::max(0.0f, width_ * kTileSize - kScreenWidth));
   cameraX_ += (target - cameraX_) * 0.12f;
 }
 
@@ -453,13 +1079,13 @@ void PlatformerWorld::resolvePlayerEnemyInteractions() {
     }
 
     const float previousBottom = player_.previousPosition.y + player_.size.y;
-    const bool stomp = player_.velocity.y > 100.0f && previousBottom <= enemy.position.y + 10.0f;
+    const bool stomp = enemy.type != EnemyType::Spiky && player_.velocity.y > 100.0f && previousBottom <= enemy.position.y + 12.0f;
     if (stomp) {
       enemy.squashed = true;
       enemy.velocity = {};
       enemy.squashTimer = 0.45f;
-      player_.velocity.y = -320.0f;
-      player_.score += 200;
+      player_.velocity.y = enemy.type == EnemyType::Flyer ? -360.0f : -320.0f;
+      player_.score += enemy.type == EnemyType::Flyer ? 300 : 200;
       pushAudio(WorldAudioEvent::Stomp);
       return;
     }
@@ -495,6 +1121,31 @@ void PlatformerWorld::resolvePlayerCollectibles() {
   }
 }
 
+void PlatformerWorld::resolvePlayerPlatformCollisions() {
+  sf::FloatRect playerRect = playerBounds();
+  player_.onGround = player_.onGround && player_.velocity.y == 0.0f;
+
+  for (std::size_t index = 0; index < platforms_.size(); ++index) {
+    const MovingPlatform& platform = platforms_[index];
+    const sf::FloatRect platformRect(platform.position.x, platform.position.y, platform.size.x, platform.size.y);
+    if (!overlapsOnX(playerRect, platformRect)) {
+      continue;
+    }
+
+    const float previousBottom = player_.previousPosition.y + player_.size.y;
+    const float currentBottom = player_.position.y + player_.size.y;
+    if (previousBottom <= platform.previousPosition.y + kPlatformCarryTolerance &&
+        currentBottom >= platform.position.y && currentBottom <= platform.position.y + platform.size.y + 26.0f &&
+        player_.velocity.y >= 0.0f) {
+      player_.position.y = platform.position.y - player_.size.y;
+      player_.velocity.y = 0.0f;
+      player_.onGround = true;
+      standingPlatformIndex_ = static_cast<int>(index);
+      playerRect = playerBounds();
+    }
+  }
+}
+
 void PlatformerWorld::handlePlayerDamage() {
   if (screenState_ != ScreenState::Playing || player_.invulnerable) {
     return;
@@ -502,7 +1153,7 @@ void PlatformerWorld::handlePlayerDamage() {
 
   if (player_.superForm) {
     player_.superForm = false;
-    player_.position.y += 22.0f;
+    player_.position.y += 18.0f;
     player_.size.y = 46.0f;
     player_.invulnerable = true;
     player_.invulnerableTimer = 1.8f;
@@ -518,7 +1169,7 @@ void PlatformerWorld::handlePlayerDamage() {
     return;
   }
 
-  resetLife(true);
+  resetCurrentLevel(true);
 }
 
 void PlatformerWorld::makePlayerSuper() {
@@ -529,8 +1180,8 @@ void PlatformerWorld::makePlayerSuper() {
   }
 
   player_.superForm = true;
-  player_.position.y -= 22.0f;
-  player_.size.y = 68.0f;
+  player_.position.y -= 18.0f;
+  player_.size.y = 64.0f;
   player_.score += 1000;
   pushAudio(WorldAudioEvent::PowerUp);
 }
@@ -568,8 +1219,8 @@ void PlatformerWorld::bumpBlock(int tileX, int tileY) {
     case TileType::UsedBlock:
     case TileType::Empty:
     case TileType::Ground:
-    case TileType::PipeLeft:
-    case TileType::PipeRight:
+    case TileType::PipeBodyLeft:
+    case TileType::PipeBodyRight:
     case TileType::PipeCapLeft:
     case TileType::PipeCapRight:
     case TileType::Stone:
@@ -580,7 +1231,6 @@ void PlatformerWorld::bumpBlock(int tileX, int tileY) {
 void PlatformerWorld::spawnMushroom(int tileX, int tileY) {
   Mushroom mushroom;
   mushroom.position = {tileX * kTileSize + 7.0f, tileY * kTileSize + 7.0f};
-  mushroom.velocity.x = kMushroomSpeed;
   mushrooms_.push_back(mushroom);
 }
 
@@ -588,9 +1238,20 @@ void PlatformerWorld::completeLevel() {
   if (screenState_ != ScreenState::Playing) {
     return;
   }
-  player_.score += static_cast<int>(timeRemaining_) * 10;
+
+  player_.score += static_cast<int>(timeRemaining_) * 12;
+  if (currentLevelIndex_ + 1 < kLevelCount) {
+    unlockedLevelCount_ = std::max(unlockedLevelCount_, currentLevelIndex_ + 2);
+  } else {
+    campaignCleared_ = true;
+  }
+
   screenState_ = ScreenState::LevelClear;
   pushAudio(WorldAudioEvent::LevelClear);
+}
+
+void PlatformerWorld::enterOverworld() {
+  screenState_ = ScreenState::Overworld;
 }
 
 void PlatformerWorld::pushAudio(WorldAudioEvent event) {
@@ -602,7 +1263,10 @@ bool PlatformerWorld::inBounds(int tileX, int tileY) const {
 }
 
 PlatformerWorld::TileType PlatformerWorld::tileAt(int tileX, int tileY) const {
-  if (!inBounds(tileX, tileY)) {
+  if (tileY < 0) {
+    return TileType::Empty;
+  }
+  if (tileX < 0 || tileX >= width_ || tileY >= height_) {
     return TileType::Ground;
   }
   return tiles_[static_cast<std::size_t>(tileY * width_ + tileX)];
@@ -646,7 +1310,7 @@ void PlatformerWorld::resolveHorizontalCollision(sf::Vector2f& position,
   sf::FloatRect bounds(position.x, position.y, size.x, size.y);
   const int left = std::max(0, static_cast<int>(std::floor(bounds.left / kTileSize)) - 1);
   const int right = std::min(width_ - 1, static_cast<int>(std::floor((bounds.left + bounds.width - 1.0f) / kTileSize)) + 1);
-  const int top = std::max(0, static_cast<int>(std::floor(bounds.top / kTileSize)) - 1);
+  const int top = std::max(-1, static_cast<int>(std::floor(bounds.top / kTileSize)) - 1);
   const int bottom =
       std::min(height_ - 1, static_cast<int>(std::floor((bounds.top + bounds.height - 1.0f) / kTileSize)) + 1);
 
@@ -688,7 +1352,7 @@ bool PlatformerWorld::resolveVerticalCollision(sf::Vector2f& position,
   sf::FloatRect bounds(position.x, position.y, size.x, size.y);
   const int left = std::max(0, static_cast<int>(std::floor(bounds.left / kTileSize)) - 1);
   const int right = std::min(width_ - 1, static_cast<int>(std::floor((bounds.left + bounds.width - 1.0f) / kTileSize)) + 1);
-  const int top = std::max(0, static_cast<int>(std::floor(bounds.top / kTileSize)) - 1);
+  const int top = std::max(-1, static_cast<int>(std::floor(bounds.top / kTileSize)) - 1);
   const int bottom =
       std::min(height_ - 1, static_cast<int>(std::floor((bounds.top + bounds.height - 1.0f) / kTileSize)) + 1);
 
@@ -722,195 +1386,177 @@ bool PlatformerWorld::resolveVerticalCollision(sf::Vector2f& position,
   return collided;
 }
 
+void PlatformerWorld::drawMenuBackground(sf::RenderWindow& window) const {
+  sf::VertexArray sky(sf::Quads, 4);
+  sky[0].position = {0.0f, 0.0f};
+  sky[1].position = {kScreenWidth, 0.0f};
+  sky[2].position = {kScreenWidth, kScreenHeight};
+  sky[3].position = {0.0f, kScreenHeight};
+  sky[0].color = rgb(24, 33, 68);
+  sky[1].color = rgb(42, 52, 106);
+  sky[2].color = rgb(86, 101, 158);
+  sky[3].color = rgb(54, 64, 124);
+  window.draw(sky);
+
+  for (int index = 0; index < 16; ++index) {
+    sf::CircleShape star(1.5f + static_cast<float>(index % 3), 8);
+    star.setFillColor(rgb(255, 255, 245, 180));
+    star.setPosition(60.0f + index * 74.0f + std::sin(titlePulse_ + index) * 4.0f, 45.0f + (index % 4) * 42.0f);
+    window.draw(star);
+  }
+
+  for (int index = 0; index < 6; ++index) {
+    sf::CircleShape hill(220.0f, 90);
+    hill.setOrigin(220.0f, 220.0f);
+    hill.setScale(1.0f, 0.58f);
+    hill.setPosition(180.0f + index * 220.0f, 760.0f);
+    hill.setFillColor(index % 2 == 0 ? rgb(48, 92, 82) : rgb(36, 70, 65));
+    window.draw(hill);
+  }
+}
+
 void PlatformerWorld::drawBackground(sf::RenderWindow& window) const {
   sf::VertexArray sky(sf::Quads, 4);
   sky[0].position = {cameraX_, 0.0f};
   sky[1].position = {cameraX_ + kScreenWidth, 0.0f};
   sky[2].position = {cameraX_ + kScreenWidth, kScreenHeight};
   sky[3].position = {cameraX_, kScreenHeight};
-  sky[0].color = rgb(121, 203, 255);
-  sky[1].color = rgb(121, 203, 255);
-  sky[2].color = rgb(189, 240, 255);
-  sky[3].color = rgb(189, 240, 255);
+  sky[0].color = skyTop_;
+  sky[1].color = skyTop_;
+  sky[2].color = skyBottom_;
+  sky[3].color = skyBottom_;
   window.draw(sky);
 
-  for (int index = 0; index < 8; ++index) {
-    const float hillX = index * 340.0f + 120.0f;
-    sf::CircleShape hill(180.0f, 90);
-    hill.setOrigin(180.0f, 180.0f);
-    hill.setPosition(hillX, 650.0f);
-    hill.setScale(1.0f, 0.55f);
-    hill.setFillColor(index % 2 == 0 ? rgb(100, 194, 115) : rgb(88, 176, 103));
+  for (int index = -1; index < 8; ++index) {
+    const float parallax = cameraX_ * 0.28f;
+    sf::CircleShape hill(220.0f, 90);
+    hill.setOrigin(220.0f, 220.0f);
+    hill.setScale(1.0f, 0.54f);
+    hill.setPosition(index * 290.0f + 180.0f + parallax, 700.0f);
+    hill.setFillColor(hillFar_);
     window.draw(hill);
   }
 
-  for (int index = 0; index < 14; ++index) {
-    const float cloudX = 120.0f + index * 290.0f + std::sin(titlePulse_ * 0.6f + index) * 8.0f;
-    const float cloudY = 90.0f + static_cast<float>(index % 3) * 70.0f;
+  for (int index = -1; index < 10; ++index) {
+    const float parallax = cameraX_ * 0.44f;
+    sf::CircleShape hill(170.0f, 90);
+    hill.setOrigin(170.0f, 170.0f);
+    hill.setScale(1.0f, 0.52f);
+    hill.setPosition(index * 220.0f + 120.0f + parallax, 720.0f);
+    hill.setFillColor(hillNear_);
+    window.draw(hill);
+  }
+
+  for (int index = -1; index < 9; ++index) {
+    const float cloudX = cameraX_ * 0.12f + index * 240.0f + 90.0f;
+    const float cloudY = 80.0f + static_cast<float>(index % 3) * 62.0f;
     for (int puff = 0; puff < 3; ++puff) {
-      sf::CircleShape shape(28.0f + puff * 5.0f, 32);
-      shape.setFillColor(rgb(255, 255, 255, 220));
-      shape.setPosition(cloudX + puff * 26.0f, cloudY - (puff == 1 ? 10.0f : 0.0f));
-      window.draw(shape);
+      sf::CircleShape cloud(22.0f + puff * 4.0f, 24);
+      cloud.setFillColor(rgb(255, 255, 255, 190));
+      cloud.setPosition(cloudX + puff * 24.0f, cloudY - (puff == 1 ? 10.0f : 0.0f));
+      window.draw(cloud);
     }
   }
 
-  const float poleX = flagColumn_ * kTileSize + 24.0f;
-  sf::RectangleShape pole({8.0f, 9.0f * kTileSize});
-  pole.setPosition({poleX, 4.0f * kTileSize});
-  pole.setFillColor(rgb(232, 243, 232));
-  window.draw(pole);
-
-  sf::RectangleShape flag({34.0f, 24.0f});
-  flag.setPosition({poleX + 8.0f, 4.0f * kTileSize + 12.0f});
-  flag.setFillColor(rgb(80, 200, 108));
-  window.draw(flag);
+  drawSprite(window, spriteRect(SpriteId::Flag), {flagColumn_ * kTileSize - 6.0f, 4.0f * kTileSize}, {48.0f, 48.0f});
 }
 
 void PlatformerWorld::drawTiles(sf::RenderWindow& window) const {
+  const int left = std::max(0, static_cast<int>(cameraX_ / kTileSize) - 2);
+  const int right = std::min(width_ - 1, static_cast<int>((cameraX_ + kScreenWidth) / kTileSize) + 3);
+
   for (int tileY = 0; tileY < height_; ++tileY) {
-    for (int tileX = 0; tileX < width_; ++tileX) {
+    for (int tileX = left; tileX <= right; ++tileX) {
       const TileType tile = tileAt(tileX, tileY);
       if (tile == TileType::Empty) {
         continue;
       }
 
       const sf::Vector2f position(tileX * kTileSize, tileY * kTileSize);
-      sf::RectangleShape rect({kTileSize, kTileSize});
-      rect.setPosition(position);
-
+      SpriteId id = SpriteId::Ground;
       switch (tile) {
-        case TileType::Ground: {
-          rect.setFillColor(rgb(160, 103, 44));
-          window.draw(rect);
-          sf::RectangleShape grass({kTileSize, 10.0f});
-          grass.setPosition(position);
-          grass.setFillColor(rgb(82, 188, 76));
-          window.draw(grass);
+        case TileType::Ground:
+          id = SpriteId::Ground;
           break;
-        }
         case TileType::Brick:
-          rect.setFillColor(rgb(191, 110, 56));
-          rect.setOutlineThickness(-2.0f);
-          rect.setOutlineColor(rgb(140, 78, 38));
-          window.draw(rect);
+          id = SpriteId::Brick;
           break;
         case TileType::QuestionCoin:
-        case TileType::QuestionMushroom: {
-          rect.setFillColor(rgb(246, 189, 56));
-          rect.setOutlineThickness(-2.0f);
-          rect.setOutlineColor(rgb(184, 126, 34));
-          window.draw(rect);
-          drawText(window, "?", 26U, position + sf::Vector2f(18.0f, 8.0f), rgb(140, 74, 18));
+        case TileType::QuestionMushroom:
+          id = SpriteId::Question;
           break;
-        }
         case TileType::UsedBlock:
-          rect.setFillColor(rgb(156, 154, 150));
-          rect.setOutlineThickness(-2.0f);
-          rect.setOutlineColor(rgb(112, 110, 104));
-          window.draw(rect);
+          id = SpriteId::UsedBlock;
           break;
         case TileType::PipeCapLeft:
-        case TileType::PipeCapRight:
-        case TileType::PipeLeft:
-        case TileType::PipeRight: {
-          rect.setFillColor(rgb(47, 178, 76));
-          rect.setOutlineThickness(-2.0f);
-          rect.setOutlineColor(rgb(28, 122, 54));
-          window.draw(rect);
-          sf::RectangleShape shine({12.0f, kTileSize});
-          shine.setPosition(position.x + 8.0f, position.y);
-          shine.setFillColor(rgb(91, 224, 120, 140));
-          window.draw(shine);
+          id = SpriteId::PipeCapLeft;
           break;
-        }
+        case TileType::PipeCapRight:
+          id = SpriteId::PipeCapRight;
+          break;
+        case TileType::PipeBodyLeft:
+          id = SpriteId::PipeBodyLeft;
+          break;
+        case TileType::PipeBodyRight:
+          id = SpriteId::PipeBodyRight;
+          break;
         case TileType::Stone:
-          rect.setFillColor(rgb(115, 120, 128));
-          rect.setOutlineThickness(-2.0f);
-          rect.setOutlineColor(rgb(72, 76, 82));
-          window.draw(rect);
+          id = SpriteId::Stone;
           break;
         case TileType::Empty:
           break;
       }
+      drawSprite(window, spriteRect(id), position, {kTileSize, kTileSize});
     }
   }
 }
 
+void PlatformerWorld::drawPlatforms(sf::RenderWindow& window) const {
+  for (const MovingPlatform& platform : platforms_) {
+    if (!isOnScreen(cameraX_, platform.position, platform.size)) {
+      continue;
+    }
+    drawSprite(window, spriteRect(SpriteId::Platform), platform.position, platform.size);
+  }
+}
+
 void PlatformerWorld::drawCoins(sf::RenderWindow& window) const {
+  const SpriteId frame = static_cast<int>(animationTimer_ * 10.0f) % 2 == 0 ? SpriteId::CoinA : SpriteId::CoinB;
   for (const Coin& coin : coins_) {
     if (coin.collected) {
       continue;
     }
-
-    sf::CircleShape circle(12.0f, 24);
-    circle.setOrigin(12.0f, 12.0f);
-    circle.setScale(1.0f + std::sin(titlePulse_ * 10.0f + coin.center.x * 0.01f) * 0.18f, 1.0f);
-    circle.setPosition(coin.center);
-    circle.setFillColor(rgb(255, 214, 58));
-    circle.setOutlineThickness(2.0f);
-    circle.setOutlineColor(rgb(193, 148, 22));
-    window.draw(circle);
+    const sf::Vector2f size(26.0f, 26.0f);
+    const sf::Vector2f position(coin.center.x - size.x * 0.5f, coin.center.y - size.y * 0.5f + std::sin(animationTimer_ * 6.0f + coin.phase) * 3.5f);
+    if (!isOnScreen(cameraX_, position, size)) {
+      continue;
+    }
+    drawSprite(window, spriteRect(frame), position, size);
   }
 }
 
 void PlatformerWorld::drawMushrooms(sf::RenderWindow& window) const {
   for (const Mushroom& mushroom : mushrooms_) {
-    if (!mushroom.active) {
+    if (!mushroom.active || !isOnScreen(cameraX_, mushroom.position, mushroom.size)) {
       continue;
     }
-
-    sf::RectangleShape stem({16.0f, 18.0f});
-    stem.setPosition({mushroom.position.x + 9.0f, mushroom.position.y + 16.0f});
-    stem.setFillColor(rgb(255, 234, 210));
-    window.draw(stem);
-
-    sf::CircleShape cap(18.0f, 30);
-    cap.setPosition(mushroom.position);
-    cap.setFillColor(rgb(228, 54, 54));
-    window.draw(cap);
-
-    for (const sf::Vector2f& dot : std::array<sf::Vector2f, 3>{{{8.0f, 8.0f}, {18.0f, 4.0f}, {24.0f, 12.0f}}}) {
-      sf::CircleShape spot(4.5f, 16);
-      spot.setPosition(mushroom.position + dot);
-      spot.setFillColor(rgb(255, 246, 236));
-      window.draw(spot);
-    }
+    drawSprite(window, spriteRect(SpriteId::Mushroom), mushroom.position, mushroom.size);
   }
 }
 
 void PlatformerWorld::drawEnemies(sf::RenderWindow& window) const {
   for (const Enemy& enemy : enemies_) {
-    if (!enemy.alive) {
+    if (!enemy.alive || !isOnScreen(cameraX_, enemy.position, enemy.size)) {
       continue;
     }
 
-    const sf::Vector2f position = enemy.position;
     if (enemy.squashed) {
-      sf::RectangleShape squash({enemy.size.x, 14.0f});
-      squash.setPosition({position.x, position.y + enemy.size.y - 14.0f});
-      squash.setFillColor(rgb(124, 74, 32));
-      window.draw(squash);
+      drawSprite(window, spriteRect(enemySprite(enemy.type, animationTimer_)), enemy.position + sf::Vector2f(0.0f, enemy.size.y - 14.0f),
+                 {enemy.size.x, 14.0f}, !enemy.facingRight, sf::Color(255, 255, 255, 220));
       continue;
     }
 
-    sf::CircleShape body(18.0f, 28);
-    body.setScale(1.0f, 0.92f);
-    body.setPosition(position);
-    body.setFillColor(rgb(155, 95, 45));
-    window.draw(body);
-
-    sf::RectangleShape feet({enemy.size.x, 8.0f});
-    feet.setPosition({position.x, position.y + enemy.size.y - 8.0f});
-    feet.setFillColor(rgb(95, 54, 23));
-    window.draw(feet);
-
-    for (const sf::Vector2f& eyeOffset : std::array<sf::Vector2f, 2>{{{11.0f, 11.0f}, {22.0f, 11.0f}}}) {
-      sf::RectangleShape eye({4.0f, 9.0f});
-      eye.setPosition(position + eyeOffset);
-      eye.setFillColor(rgb(255, 246, 236));
-      window.draw(eye);
-    }
+    drawSprite(window, spriteRect(enemySprite(enemy.type, animationTimer_)), enemy.position, enemy.size, !enemy.facingRight);
   }
 }
 
@@ -919,100 +1565,171 @@ void PlatformerWorld::drawPlayer(sf::RenderWindow& window) const {
     return;
   }
 
-  const sf::Vector2f position = player_.position;
-  const float height = player_.size.y;
-
-  sf::RectangleShape overalls({26.0f, height * 0.46f});
-  overalls.setPosition({position.x + 4.0f, position.y + height * 0.46f});
-  overalls.setFillColor(rgb(46, 112, 214));
-  window.draw(overalls);
-
-  sf::RectangleShape shirt({26.0f, height * 0.26f});
-  shirt.setPosition({position.x + 4.0f, position.y + height * 0.32f});
-  shirt.setFillColor(rgb(214, 46, 46));
-  window.draw(shirt);
-
-  sf::RectangleShape legs({26.0f, height * 0.20f});
-  legs.setPosition({position.x + 4.0f, position.y + height * 0.78f});
-  legs.setFillColor(rgb(92, 52, 28));
-  window.draw(legs);
-
-  sf::CircleShape head(11.0f, 24);
-  head.setPosition({position.x + 6.0f, position.y + 8.0f});
-  head.setFillColor(rgb(255, 220, 183));
-  window.draw(head);
-
-  sf::RectangleShape cap({30.0f, 10.0f});
-  cap.setPosition({position.x + 2.0f, position.y});
-  cap.setFillColor(rgb(219, 46, 46));
-  window.draw(cap);
-
-  sf::RectangleShape visor({18.0f, 4.0f});
-  visor.setPosition({position.x + (player_.facingRight ? 14.0f : 2.0f), position.y + 10.0f});
-  visor.setFillColor(rgb(160, 30, 30));
-  window.draw(visor);
+  const SpriteId frame = playerSprite(player_.superForm, player_.velocity.x, player_.velocity.y, animationTimer_);
+  drawSprite(window, spriteRect(frame), player_.position, player_.size, !player_.facingRight);
 }
 
 void PlatformerWorld::drawHud(sf::RenderWindow& window) const {
   sf::RectangleShape bar({kScreenWidth, 66.0f});
-  bar.setFillColor(rgb(7, 12, 25, 210));
+  bar.setFillColor(rgb(7, 12, 25, 214));
   window.draw(bar);
 
   drawText(window, "MUSHROOM RUN", 18U, {26.0f, 10.0f}, rgb(255, 246, 236));
   drawText(window, "SCORE " + std::to_string(player_.score), 17U, {26.0f, 36.0f}, rgb(255, 246, 236));
-  drawText(window, "COINS " + std::to_string(player_.coins), 17U, {278.0f, 36.0f}, rgb(255, 214, 58));
-  drawText(window, "WORLD 1-1", 17U, {512.0f, 36.0f}, rgb(255, 246, 236));
-  drawText(window, "LIVES " + std::to_string(player_.lives), 17U, {738.0f, 36.0f}, rgb(255, 246, 236));
-  drawText(window, "TIME " + std::to_string(static_cast<int>(std::ceil(timeRemaining_))), 17U, {958.0f, 36.0f},
+  drawText(window, "COINS " + std::to_string(player_.coins), 17U, {270.0f, 36.0f}, rgb(255, 214, 58));
+  drawText(window, currentLevelCode_ + "  " + currentLevelName_, 17U, {510.0f, 36.0f}, rgb(255, 246, 236));
+  drawText(window, "LIVES " + std::to_string(player_.lives), 17U, {836.0f, 36.0f}, rgb(255, 246, 236));
+  drawText(window, "TIME " + std::to_string(static_cast<int>(std::ceil(timeRemaining_))), 17U, {1030.0f, 36.0f},
            rgb(255, 246, 236));
+}
+
+void PlatformerWorld::drawTitleScreen(sf::RenderWindow& window) const {
+  drawText(window, "MUSHROOM RUN", 58U, {kScreenWidth * 0.5f, 126.0f + std::sin(titlePulse_ * 1.8f) * 5.0f},
+           rgb(255, 246, 236), true);
+  drawText(window, "A full side-scrolling platformer with campaign flow, multiple levels, enemy variety, and textured sprites.",
+           22U, {kScreenWidth * 0.5f, 206.0f}, rgb(226, 233, 248), true);
+
+  drawSprite(window, spriteRect(SpriteId::PlayerRunA), {320.0f, 292.0f}, {112.0f, 138.0f}, false);
+  drawSprite(window, spriteRect(SpriteId::WalkerA), {518.0f, 334.0f}, {92.0f, 84.0f});
+  drawSprite(window, spriteRect(SpriteId::FlyerA), {698.0f, 302.0f + std::sin(titlePulse_ * 2.8f) * 10.0f}, {98.0f, 76.0f});
+  drawSprite(window, spriteRect(SpriteId::Platform), {498.0f, 426.0f}, {128.0f, 28.0f});
+  drawSprite(window, spriteRect(SpriteId::CoinA), {864.0f, 310.0f + std::sin(titlePulse_ * 5.0f) * 6.0f}, {46.0f, 46.0f});
+  drawSprite(window, spriteRect(SpriteId::Mushroom), {952.0f, 334.0f}, {74.0f, 74.0f});
+
+  sf::RectangleShape panel({760.0f, 178.0f});
+  panel.setOrigin(380.0f, 89.0f);
+  panel.setPosition({kScreenWidth * 0.5f, 540.0f});
+  panel.setFillColor(rgb(10, 18, 32, 230));
+  panel.setOutlineThickness(3.0f);
+  panel.setOutlineColor(rgb(250, 236, 208));
+  window.draw(panel);
+
+  drawText(window, "Campaign flow: Overworld  ->  Course  ->  Rewards  ->  Next mission", 22U, {kScreenWidth * 0.5f, 494.0f},
+           rgb(255, 214, 58), true);
+  drawText(window, "Enemy roster: walkers, hoppers, spikies, flyers, plus moving-platform traversal.", 20U,
+           {kScreenWidth * 0.5f, 534.0f}, rgb(226, 233, 248), true);
+  drawText(window, "ENTER / SPACE TO START CAMPAIGN", 24U, {kScreenWidth * 0.5f, 586.0f}, rgb(120, 218, 255), true);
+  drawText(window, "Arrows or A,D move   Space jump   Shift run   R restart current stage", 18U,
+           {kScreenWidth * 0.5f, 626.0f}, rgb(215, 222, 235), true);
+}
+
+void PlatformerWorld::drawOverworld(sf::RenderWindow& window) const {
+  drawText(window, "OVERWORLD", 48U, {kScreenWidth * 0.5f, 90.0f}, rgb(255, 246, 236), true);
+  drawText(window, "Choose the next route. Completed stages stay unlocked.", 22U, {kScreenWidth * 0.5f, 142.0f},
+           rgb(226, 233, 248), true);
+
+  const std::array<sf::Vector2f, kLevelCount> nodePositions{{{240.0f, 388.0f}, {600.0f, 286.0f}, {962.0f, 388.0f}}};
+  for (int index = 0; index < kLevelCount - 1; ++index) {
+    sf::Vertex line[] = {
+        sf::Vertex(nodePositions[static_cast<std::size_t>(index)], rgb(210, 216, 240, 170)),
+        sf::Vertex(nodePositions[static_cast<std::size_t>(index + 1)], rgb(210, 216, 240, 170)),
+    };
+    window.draw(line, 2, sf::Lines);
+  }
+
+  for (int index = 0; index < kLevelCount; ++index) {
+    const bool unlocked = index < unlockedLevelCount_;
+    const bool completed = index < unlockedLevelCount_ - 1;
+    const bool selected = index == selectedLevelIndex_;
+    const float pulse = selected ? 1.0f + std::sin(titlePulse_ * 4.0f) * 0.08f : 1.0f;
+
+    sf::CircleShape node(34.0f, 32);
+    node.setOrigin(34.0f, 34.0f);
+    node.setPosition(nodePositions[static_cast<std::size_t>(index)]);
+    node.setScale(pulse, pulse);
+    node.setFillColor(!unlocked ? rgb(72, 78, 106) : completed ? rgb(86, 194, 102) : rgb(124, 168, 255));
+    node.setOutlineThickness(4.0f);
+    node.setOutlineColor(selected ? rgb(255, 240, 188) : rgb(240, 244, 252));
+    window.draw(node);
+
+    const SpriteId icon = index == 0 ? SpriteId::WalkerA : index == 1 ? SpriteId::HopperA : SpriteId::FlyerA;
+    drawSprite(window, spriteRect(icon), nodePositions[static_cast<std::size_t>(index)] - sf::Vector2f(26.0f, 28.0f),
+               {52.0f, 52.0f}, false, unlocked ? sf::Color::White : rgb(150, 156, 178));
+  }
+
+  const LevelDescriptor& descriptor = kLevels[static_cast<std::size_t>(selectedLevelIndex_)];
+  sf::RectangleShape panel({760.0f, 210.0f});
+  panel.setOrigin(380.0f, 105.0f);
+  panel.setPosition({kScreenWidth * 0.5f, 570.0f});
+  panel.setFillColor(rgb(10, 18, 32, 228));
+  panel.setOutlineThickness(3.0f);
+  panel.setOutlineColor(rgb(250, 236, 208));
+  window.draw(panel);
+
+  drawText(window, std::string(descriptor.code) + "  " + descriptor.name, 32U, {220.0f, 498.0f}, rgb(255, 246, 236));
+  drawText(window, descriptor.subtitle, 19U, {220.0f, 546.0f}, rgb(220, 228, 242));
+  drawText(window, "Lives " + std::to_string(player_.lives) + "   Coins " + std::to_string(player_.coins) + "   Score " +
+                       std::to_string(player_.score),
+           19U, {220.0f, 588.0f}, rgb(255, 214, 58));
+  drawText(window, "LEFT / RIGHT SELECT   ENTER LAUNCH   ESC TITLE", 20U, {220.0f, 630.0f}, rgb(120, 218, 255));
 }
 
 void PlatformerWorld::drawOverlay(sf::RenderWindow& window) const {
   if (screenState_ == ScreenState::Playing) {
-    drawText(window, "Arrows/A,D move   Space jump   Shift run   R restart", 14U, {kScreenWidth * 0.5f, 685.0f},
-             rgb(20, 34, 54, 180), true);
+    drawText(window, currentLevelSubtitle_, 16U, {kScreenWidth * 0.5f, 685.0f}, rgb(24, 34, 52, 190), true);
     return;
   }
 
   sf::RectangleShape veil({kScreenWidth, kScreenHeight});
-  veil.setFillColor(rgb(6, 8, 16, 166));
+  veil.setFillColor(rgb(6, 8, 16, 126));
   window.draw(veil);
 
-  sf::RectangleShape panel({560.0f, 300.0f});
-  panel.setOrigin(280.0f, 150.0f);
+  sf::RectangleShape panel({640.0f, 236.0f});
+  panel.setOrigin(320.0f, 118.0f);
   panel.setPosition({kScreenWidth * 0.5f, kScreenHeight * 0.5f});
   panel.setFillColor(rgb(10, 18, 32, 238));
   panel.setOutlineThickness(3.0f);
   panel.setOutlineColor(rgb(250, 236, 208));
   window.draw(panel);
 
-  if (screenState_ == ScreenState::Title) {
-    drawText(window, "MUSHROOM RUN", 48U, {kScreenWidth * 0.5f, 214.0f + std::sin(titlePulse_ * 2.0f) * 6.0f},
-             rgb(255, 246, 236), true);
-    drawText(window, "A fast side-scrolling platformer inspired by the arcade feel you asked for.", 20U,
-             {kScreenWidth * 0.5f, 294.0f}, rgb(222, 231, 244), true);
-    drawText(window, "Run, jump, stomp, break bricks, collect coins, grab mushrooms, reach the flag.", 18U,
-             {kScreenWidth * 0.5f, 332.0f}, rgb(255, 214, 58), true);
-    drawText(window, "ENTER / SPACE TO START", 24U, {kScreenWidth * 0.5f, 408.0f}, rgb(120, 218, 255), true);
-    drawText(window, "Arrows or A,D move   Space jump   Shift run", 17U, {kScreenWidth * 0.5f, 452.0f},
-             rgb(215, 222, 235), true);
+  if (screenState_ == ScreenState::LevelIntro) {
+    drawText(window, currentLevelCode_, 28U, {kScreenWidth * 0.5f, 274.0f}, rgb(120, 218, 255), true);
+    drawText(window, currentLevelName_, 42U, {kScreenWidth * 0.5f, 330.0f}, rgb(255, 246, 236), true);
+    drawText(window, currentLevelSubtitle_, 21U, {kScreenWidth * 0.5f, 388.0f}, rgb(226, 233, 248), true);
+    drawText(window, "Get ready", 22U, {kScreenWidth * 0.5f, 450.0f}, rgb(255, 214, 58), true);
     return;
   }
 
   if (screenState_ == ScreenState::LevelClear) {
-    drawText(window, "COURSE CLEAR", 42U, {kScreenWidth * 0.5f, 240.0f}, rgb(121, 230, 142), true);
-    drawText(window, "Final score " + std::to_string(player_.score), 24U, {kScreenWidth * 0.5f, 320.0f},
-             rgb(255, 246, 236), true);
-    drawText(window, "Coins " + std::to_string(player_.coins) + "   Lives " + std::to_string(player_.lives), 20U,
-             {kScreenWidth * 0.5f, 360.0f}, rgb(255, 214, 58), true);
-    drawText(window, "ENTER TO PLAY AGAIN", 24U, {kScreenWidth * 0.5f, 428.0f}, rgb(120, 218, 255), true);
+    drawText(window, campaignCleared_ ? "CAMPAIGN CLEAR" : "COURSE CLEAR", 42U, {kScreenWidth * 0.5f, 260.0f},
+             campaignCleared_ ? rgb(121, 230, 142) : rgb(120, 218, 255), true);
+    drawText(window, "Score " + std::to_string(player_.score) + "   Coins " + std::to_string(player_.coins), 24U,
+             {kScreenWidth * 0.5f, 332.0f}, rgb(255, 246, 236), true);
+    drawText(window, campaignCleared_ ? "All routes complete. Enter to return to title." : "Enter to return to the overworld.",
+             22U, {kScreenWidth * 0.5f, 398.0f}, rgb(255, 214, 58), true);
     return;
   }
 
-  drawText(window, "GAME OVER", 42U, {kScreenWidth * 0.5f, 250.0f}, rgb(255, 112, 112), true);
-  drawText(window, "Final score " + std::to_string(player_.score), 24U, {kScreenWidth * 0.5f, 324.0f},
-           rgb(255, 246, 236), true);
-  drawText(window, "ENTER TO RESTART", 24U, {kScreenWidth * 0.5f, 416.0f}, rgb(120, 218, 255), true);
+  drawText(window, "GAME OVER", 42U, {kScreenWidth * 0.5f, 270.0f}, rgb(255, 112, 112), true);
+  drawText(window, "Final score " + std::to_string(player_.score), 24U, {kScreenWidth * 0.5f, 340.0f}, rgb(255, 246, 236),
+           true);
+  drawText(window, "Enter to start a new campaign", 22U, {kScreenWidth * 0.5f, 410.0f}, rgb(120, 218, 255), true);
+}
+
+void PlatformerWorld::drawSprite(sf::RenderTarget& target,
+                                 const sf::IntRect& textureRect,
+                                 const sf::Vector2f& position,
+                                 const sf::Vector2f& size,
+                                 bool flipX,
+                                 const sf::Color& tint) const {
+  if (!hasAtlas_) {
+    return;
+  }
+
+  sf::Sprite sprite(atlasTexture_);
+  sprite.setTextureRect(textureRect);
+  sprite.setColor(tint);
+
+  if (flipX) {
+    sprite.setOrigin(static_cast<float>(textureRect.width), 0.0f);
+    sprite.setPosition(position.x + size.x, position.y);
+    sprite.setScale(-(size.x / static_cast<float>(textureRect.width)), size.y / static_cast<float>(textureRect.height));
+  } else {
+    sprite.setPosition(position);
+    sprite.setScale(size.x / static_cast<float>(textureRect.width), size.y / static_cast<float>(textureRect.height));
+  }
+
+  target.draw(sprite);
 }
 
 void PlatformerWorld::drawText(sf::RenderTarget& target,
