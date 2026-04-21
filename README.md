@@ -1,77 +1,38 @@
-# Tactical Hybrid AI
+# Mushroom Run
 
-A compact C++17 turn-based tactics project with three interchangeable enemy controllers:
+`Mushroom Run` is a C++17 side-scrolling platformer built with SFML. The current main build is no longer the old tactical AI prototype; it is now a single-player campaign platformer with a title screen, overworld flow, multiple handcrafted stages, moving platforms, enemy variety, power-ups, coins, lives, timer pressure, and sprite-sheet rendering.
 
-- `Minimax`
-- `Alpha-Beta` with iterative deepening, move ordering, quiescence, killer moves, and a transposition table
-- `Hybrid ML + Search`, which blends the classical evaluator with an ONNX-loaded MLP
+## Current Game
 
-The gameplay loop is intentionally small and inspectable: an 8x8 tactical board, terrain, hazards, directional and area attacks, player-vs-enemy turns, SFML visualization, and a live analytics panel for AI behavior.
+The main gameplay loop is:
 
-## Architecture
+`Title -> Overworld -> Level Intro -> Course -> Clear / Game Over`
 
-### Runtime Layer
+Current features:
 
-- `Core/Game.*`: main loop, input, turn flow, AI scheduling, rendering orchestration
-- `Core/GameState.*`: copyable authoritative state used by both gameplay and search
-- `Core/Scenario.*`: initial skirmish layout
-- `Entities/Unit.*`: polymorphic renderable unit hierarchy
-- `Board/*`: grid board and terrain definitions
-- `Moves/*`: move generation, attack geometry, mobility and threat helpers
+- Three campaign stages with distinct terrain and pacing
+- Overworld route select between unlocked stages
+- Enemy roster:
+  - Walker
+  - Hopper
+  - Spiky
+  - Flyer
+- Horizontal and vertical moving platforms
+- Coins, brick blocks, question blocks, mushrooms, lives, score, and time limits
+- Sprite-sheet rendering for tiles, player, enemies, collectibles, and UI scene art
+- Procedural audio tones for jump, stomp, coin, power-up, clear, and game-over feedback
 
-### AI Layer
+## Active Code Structure
 
-- `AI/Heuristics/CompositeEvaluator.*`: health, control, threat, mobility, hazard, and future-position scoring
-- `AI/Search/SearchAI.*`: iterative deepening, alpha-beta, quiescence, killer moves, move ordering
-- `AI/Search/TranspositionTable.*`: TT entries and replacement policy
-- `Utils/Zobrist.*`: board hashing for TT reuse
-- `AI/ML/GameStateEncoder.*`: fixed-size board/unit feature encoder
-- `AI/ML/MLModel.*`: ONNX Runtime wrapper for MLP inference
+The main build uses these runtime files:
 
-### ML Layer
+- `main.cpp`: process entry point
+- `Core/Game.*`: window loop, input forwarding, and synthesized audio playback
+- `Platformer/World.*`: campaign flow, level building, physics, collisions, enemies, platforms, rendering, and UI
+- `Utils/FontLocator.*`: finds a usable system font on Windows for HUD and overlays
+- `CMakeLists.txt`: build configuration for the `mushroom_run` target
 
-- `ML/training/train_mlp.py`: self-play dataset generation, supervised MLP training, ONNX export
-- `ML/model/`: expected output location for the exported model and metadata
-
-## Project Structure
-
-```text
-.
-├── AI
-│   ├── Heuristics
-│   ├── ML
-│   └── Search
-├── Board
-├── Core
-├── Entities
-├── ML
-│   ├── model
-│   └── training
-├── Moves
-├── Utils
-├── CMake
-├── CMakeLists.txt
-├── README.md
-└── main.cpp
-```
-
-## Search Stack
-
-The enemy controller evaluates action-level plies across the full turn system:
-
-1. Iterative deepening increases search depth until the target depth or time budget is hit.
-2. Root actions are ordered using damage, control-value gain, center pressure, TT best move, and killer moves.
-3. Alpha-beta pruning is applied when enabled.
-4. The transposition table stores exact and bound scores keyed by Zobrist hashes.
-5. Quiescence search extends leaf nodes through tactical attack sequences to reduce horizon effects.
-
-The hybrid evaluator blends:
-
-```text
-final_score = classical_weight * heuristic_score + ml_weight * ml_score
-```
-
-The Python training script learns `ml_score` targets from self-play states and exports the model to ONNX for C++ inference.
+The repository still contains older tactical/AI folders from previous iterations, but they are not part of the current executable target.
 
 ## Build
 
@@ -79,9 +40,8 @@ The Python training script learns `ml_score` targets from self-play states and e
 
 - CMake 3.24+
 - A C++17 compiler
-- Git, if `TACTICAL_FETCH_SFML=ON`
+- Git, if `PLATFORMER_FETCH_SFML=ON`
 - SFML 2.6.x, or let CMake fetch it automatically
-- Optional: ONNX Runtime for native inference
 
 ### Configure
 
@@ -89,17 +49,11 @@ The Python training script learns `ml_score` targets from self-play states and e
 cmake -S . -B build
 ```
 
-If you already installed ONNX Runtime locally, point CMake at it:
+Optional flags:
 
 ```powershell
-$env:ONNXRUNTIME_ROOT="C:\path\to\onnxruntime"
-cmake -S . -B build -DTACTICAL_ENABLE_ONNX=ON
-```
-
-To build without ML inference first:
-
-```powershell
-cmake -S . -B build -DTACTICAL_ENABLE_ONNX=OFF
+cmake -S . -B build -DPLATFORMER_ENABLE_AUDIO=ON
+cmake -S . -B build -DPLATFORMER_FETCH_SFML=ON
 ```
 
 ### Build
@@ -110,49 +64,69 @@ cmake --build build --config Release
 
 ### Run
 
+Single-config generators like Ninja:
+
 ```powershell
-.\build\Release\tactical_hybrid_ai.exe
+.\build\mushroom_run.exe
+```
+
+Multi-config generators like Visual Studio:
+
+```powershell
+.\build\Release\mushroom_run.exe
 ```
 
 ## Controls
 
-- `Left Click`: select a player unit, choose a destination, then choose an attack target
-- `Space`: commit move-only or wait
-- `Right Click` or `Backspace`: cancel the current selection stage
-- `1`, `2`, `3`: Minimax, Alpha-Beta, Hybrid
-- `[`, `]`: decrease/increase depth
-- `P`: pruning
-- `M`: ML influence
-- `O`: move ordering
-- `Q`: quiescence search
-- `K`: killer moves
-- `T`: transposition table
-- `-`, `=`: decrease/increase ML blend weight
-- `R`: reset the scenario
+### Title / Menus
 
-## Train And Export The MLP
+- `Enter` / `Space`: start campaign or confirm
+- `Esc`: return to title from overworld or game-over flow
 
-Install the Python dependencies:
+### Overworld
 
-```powershell
-python -m pip install -r ML/training/requirements.txt
-```
+- `Left` / `Right` or `A` / `D`: change selected stage
+- `Enter` / `Space`: launch selected stage
 
-Generate self-play data, train, and export ONNX:
+### In Level
 
-```powershell
-python ML/training/train_mlp.py --episodes 800 --epochs 40
-```
+- `Left` / `Right` or `A` / `D`: move
+- `Space`, `Up`, or `W`: jump
+- `Shift` or `Z`: run
+- `R`: restart current stage
+- `Esc`: return to overworld
 
-This writes:
+## Level Content
 
-- `ML/model/tactical_mlp.onnx`
-- `ML/model/tactical_mlp_meta.json`
+The campaign currently includes:
 
-The C++ game tries to load `ML/model/tactical_mlp.onnx` automatically on startup.
+- `1-1 Verdant Run`: introductory ground course with early movers and mixed enemy pressure
+- `1-2 Foundry Night`: denser stone layouts, tighter pits, and lift-heavy traversal
+- `1-3 Sky Bridge`: larger gaps, more flyers, and chained platform movement
 
-## Notes
+## Rendering Notes
 
-- The C++ and Python evaluators intentionally mirror each other so the model learns against the same tactical signals used by search.
-- The runtime board rendering is shape-based to keep the repository asset-light and easy to build from scratch.
-- ONNX support is integrated at the CMake and C++ levels, but the project still builds without it for gameplay-only testing.
+The sprite art is generated into an internal atlas at runtime inside `Platformer/World.cpp`, so the project does not depend on an external sprite sheet asset yet. The renderer still uses textured sprites, not raw SFML rectangles for the active gameplay objects.
+
+## Audio Notes
+
+Audio is generated procedurally in `Core/Game.cpp`. On Windows, CMake copies `OpenAL32.dll` next to the executable automatically when audio is enabled.
+
+## Status
+
+What is implemented now:
+
+- Full platformer main build
+- Title screen and overworld flow
+- Multiple levels
+- More enemy types
+- Moving platforms
+- Sprite-sheet based rendering
+- Buildable `mushroom_run` executable
+
+What remains as good next steps:
+
+- External PNG sprite atlas instead of code-generated atlas
+- Additional enemy behaviors and bosses
+- Particle effects for impacts and block hits
+- Save data for stage progress and best scores
